@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # UPU S10 Barcode Generator
 #
-# This script generates a UPU S10 standard barcode image (Code128) with
-# the correctly formatted text underneath.
-# The logic for the checksum calculation is based on the provided HTML file.
+# This script generates UPU S10 standard barcode images (Code128) with
+# the correctly formatted text underneath, supporting single or batch creation.
+# It allows the final two characters to be either an ISO country code or a
+# numeric regional/provincial code.
+#
+# Author: Gemini
 #
 # Required libraries:
 # - python-barcode: For generating the barcode itself.
@@ -125,18 +128,20 @@ def generate_upu_barcode(s10_id: str, output_filename: str):
 
         # --- 4. Save the Final Image ---
         final_image.save(output_filename)
-        print(f"✅ Successfully generated barcode and saved to '{output_filename}'")
 
     except Exception as e:
-        print(f"❌ An error occurred during barcode generation: {e}", file=sys.stderr)
-        sys.exit(1)
+        # Raise the exception to be caught in the main loop
+        raise Exception(f"An error occurred during barcode generation for {s10_id}: {e}")
 
 
 def main():
     """Main function to parse arguments and run the generator."""
     parser = argparse.ArgumentParser(
-        description="Generate a UPU S10 barcode image.",
-        epilog="Example: python upu_generator.py RD 60000000 CN -o my_barcode.png"
+        description="Generate UPU S10 barcode images in a batch.",
+        epilog="Examples:\n"
+               "  Standard: python upu_generator.py HF 60000000 CN 25 -d ./barcodes\n"
+               "  Regional: python upu_generator.py KA 12345678 11 50 -d ./provincial_barcodes",
+        formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
         "service_indicator",
@@ -144,19 +149,25 @@ def main():
         help="The 2-character service indicator (e.g., 'HF', 'RA')."
     )
     parser.add_argument(
-        "serial_number",
+        "start_serial_number",
         type=str,
-        help="The 8-digit serial number (e.g., '60000000')."
+        help="The starting 8-digit serial number (e.g., '60000000')."
     )
     parser.add_argument(
-        "country_code",
+        "country_or_regional_code",
         type=str,
-        help="The 2-character destination country code / region code (e.g., 'CN', 'US' or '31', '32')."
+        help="The 2-character destination country code or regional extension (e.g., 'CN', '11')."
     )
     parser.add_argument(
-        "-o", "--output",
+        "quantity",
+        type=int,
+        help="The number of barcodes to generate."
+    )
+    parser.add_argument(
+        "-d", "--directory",
         type=str,
-        help="Output filename for the PNG image. Defaults to '<s10_id>.png'."
+        default="barcodes",
+        help="Output directory for the PNG images. Defaults to './barcodes'."
     )
 
     args = parser.parse_args()
@@ -166,41 +177,60 @@ def main():
         print("Error: Service indicator must be 2 alphabetic characters.", file=sys.stderr)
         sys.exit(1)
     
-    if len(args.serial_number) != 8 or not args.serial_number.isdigit():
-        print("Error: Serial number must be 8 digits.", file=sys.stderr)
+    if len(args.start_serial_number) != 8 or not args.start_serial_number.isdigit():
+        print("Error: Starting serial number must be 8 digits.", file=sys.stderr)
         sys.exit(1)
 
-#    if len(args.country_code) != 2 or not args.country_code.isalpha():
-#        print("Error: Country code must be 2 alphabetic characters.", file=sys.stderr)
-#        sys.exit(1)
+    if len(args.country_or_regional_code) != 2 or not args.country_or_regional_code.isalnum():
+        print("Error: Country/regional code must be 2 alphanumeric characters.", file=sys.stderr)
+        sys.exit(1)
+        
+    if args.quantity <= 0:
+        print("Error: Quantity must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
 
-    # --- Generate S10 ID ---
+    # --- Prepare for Batch Generation ---
     si = args.service_indicator.upper()
-    sn = args.serial_number
-    cc = args.country_code.upper()
+    cc = args.country_or_regional_code.upper()
+    start_sn = int(args.start_serial_number)
     
-    try:
-        cs = calculate_s10_checksum(sn)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    full_s10_id = f"{si}{sn}{cs}{cc}"
+    # Create output directory if it doesn't exist
+    output_dir = args.directory
+    os.makedirs(output_dir, exist_ok=True)
     
-    print(f"Generated S10 ID: {full_s10_id}")
-    print(f"Formatted Text: {format_s10_text(full_s10_id)}")
+    print(f"Generating {args.quantity} barcodes into directory '{output_dir}'...")
 
-    # --- Set Output Filename ---
-    if args.output:
-        output_filename = args.output
-        # Ensure it has a .png extension
-        if not output_filename.lower().endswith('.png'):
-            output_filename += '.png'
-    else:
-        output_filename = f"{full_s10_id}.png"
+    # --- Generation Loop ---
+    for i in range(args.quantity):
+        current_sn_int = start_sn + i
+        
+        # Format the serial number to be 8 digits, padded with leading zeros
+        sn_str = str(current_sn_int).zfill(8)
+        
+        # Stop if the serial number exceeds 8 digits
+        if len(sn_str) > 8:
+            print(f"\nWarning: Serial number has exceeded 8 digits ('99999999'). Stopping at {i} barcodes.", file=sys.stderr)
+            break
+            
+        try:
+            cs = calculate_s10_checksum(sn_str)
+            full_s10_id = f"{si}{sn_str}{cs}{cc}"
+            output_filename = os.path.join(output_dir, f"{full_s10_id}.png")
+            
+            # Generate the barcode
+            generate_upu_barcode(full_s10_id, output_filename)
+            
+            # Print progress
+            sys.stdout.write(f"\r✅ Generated {i+1}/{args.quantity}: {full_s10_id}")
+            sys.stdout.flush()
 
-    # --- Generate Barcode ---
-    generate_upu_barcode(full_s10_id, output_filename)
+        except Exception as e:
+            print(f"\n❌ Error: {e}", file=sys.stderr)
+            # Decide whether to stop or continue on error
+            # For now, we will stop.
+            sys.exit(1)
+            
+    print("\nBatch generation complete.")
 
 
 if __name__ == "__main__":
