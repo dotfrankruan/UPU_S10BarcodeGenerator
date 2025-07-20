@@ -2,15 +2,14 @@
 # UPU S10 Barcode Generator
 #
 # This script generates UPU S10 standard barcode images (Code128) with
-# the correctly formatted text underneath, supporting single or batch creation.
-# It allows the final two characters to be either an ISO country code or a
-# numeric regional/provincial code.
+# an enhanced visual style, including larger text and a bottom color bar,
+# inspired by real-world postal labels.
 #
 # Author: Gemini
 #
 # Required libraries:
 # - python-barcode: For generating the barcode itself.
-# - Pillow: For creating the final image with custom text.
+# - Pillow: For creating the final image with custom text and styling.
 #
 # You can install them using pip:
 # pip install python-barcode Pillow
@@ -41,13 +40,9 @@ def calculate_s10_checksum(serial_number: str) -> int:
 
     weights = [8, 6, 4, 2, 3, 5, 9, 7]
     
-    # Calculate the weighted sum
     s = sum(int(digit) * weight for digit, weight in zip(serial_number, weights))
-    
-    # Calculate the checksum
     checksum = 11 - (s % 11)
 
-    # Apply special UPU rules
     if checksum == 10:
         return 0
     elif checksum == 11:
@@ -73,71 +68,94 @@ def format_s10_text(s10_id: str) -> str:
     cc = s10_id[11:13]
     return f"{si} {sn1} {sn2} {cs} {cc}"
 
-def generate_upu_barcode(s10_id: str, output_filename: str):
+def generate_upu_barcode(s10_id: str, output_filename: str, code_extension: str):
     """
-    Generates and saves a UPU S10 barcode image.
+    Generates and saves a UPU S10 barcode image with an enhanced visual style.
 
     This function creates a Code128 barcode, then uses Pillow to draw it
-    onto a new canvas with the specially formatted S10 text underneath.
+    onto a new canvas with enlarged, formatted text. A green bar is added
+    at the bottom only for numeric (provincial) codes.
 
     Args:
         s10_id: The full 13-character S10 identifier.
         output_filename: The path to save the final PNG image.
+        code_extension: The 2-character code, used to determine if a green bar is needed.
     """
     try:
         # --- 1. Generate Barcode (without text) ---
         code128 = get_barcode_class('code128')
-        # The writer options suppress the default text under the barcode
         writer_options = {
             "write_text": False,
-            "module_height": 15.0, # Standard height
-            "module_width": 0.3,   # Controls the width of the bars
-            "quiet_zone": 5.0,     # White space on the sides
+            "module_height": 15.0,
+            "module_width": 0.4, # Slightly wider bars
+            "quiet_zone": 2.0,
         }
         barcode_image = code128(s10_id, writer=ImageWriter()).render(writer_options)
 
-        # --- 2. Create the Final Image with Custom Text using Pillow ---
+        # --- 2. Define Visual Style ---
+        FONT_SIZE = 48
+        TEXT_AREA_HEIGHT = 80  # Fixed height for the text area below the barcode
+        GREEN_BAR_HEIGHT = 30
+        GREEN_COLOR = '#1E8449' # A shade of postal green
+        is_provincial = code_extension.isdigit()
+
+        # --- 3. Prepare Canvas and Font ---
+        formatted_text = format_s10_text(s10_id)
+        try:
+            # Use a clear, bold font like Arial Black if available
+            font = ImageFont.truetype("ariblk.ttf", FONT_SIZE)
+        except IOError:
+            print("Warning: Arial Black font not found. Using default bold font.")
+            try:
+                # Fallback to Courier Bold
+                font = ImageFont.truetype("courbd.ttf", FONT_SIZE)
+            except IOError:
+                font = ImageFont.load_default()
+
+        # Get text dimensions to calculate canvas size and position
+        text_bbox = font.getbbox(formatted_text)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        
         barcode_width, barcode_height = barcode_image.size
-        text_area_height = 40  # Space below the barcode for text
-        final_height = barcode_height + text_area_height
+        
+        # Calculate final image height based on fixed areas
+        final_height = barcode_height + TEXT_AREA_HEIGHT
+        if is_provincial:
+            final_height += GREEN_BAR_HEIGHT
         
         # Create a new blank image with a white background
         final_image = Image.new('RGB', (barcode_width, final_height), 'white')
-        
-        # Paste the generated barcode onto the blank image
+        draw = ImageDraw.Draw(final_image)
+
+        # --- 4. Composite the Image ---
+        # Paste the barcode at the top
         final_image.paste(barcode_image, (0, 0))
 
-        # --- 3. Add the Formatted Text ---
-        draw = ImageDraw.Draw(final_image)
-        formatted_text = format_s10_text(s10_id)
-        
-        # Try to load a monospaced font, fallback to default
-        try:
-            # Use a common monospaced font for better alignment
-            font = ImageFont.truetype("cour.ttf", 28) # Courier New
-        except IOError:
-            print("Warning: Courier font not found. Using default font.")
-            font = ImageFont.load_default()
-
-        # Calculate text position to center it
-        text_width = draw.textlength(formatted_text, font=font)
+        # Calculate text position to center it horizontally and vertically in its area
         text_x = (barcode_width - text_width) / 2
-        text_y = barcode_height + 5 # Position text below the barcode
+        text_area_y_start = barcode_height
+        text_y = text_area_y_start + (TEXT_AREA_HEIGHT - text_height) / 2
         
+        # Draw the enlarged text
         draw.text((text_x, text_y), formatted_text, fill='black', font=font)
+        
+        # Draw the green bar at the very bottom ONLY for provincial codes
+        if is_provincial:
+            bar_y_start = final_height - GREEN_BAR_HEIGHT
+            draw.rectangle([(0, bar_y_start), (barcode_width, final_height)], fill=GREEN_COLOR)
 
-        # --- 4. Save the Final Image ---
+        # --- 5. Save the Final Image ---
         final_image.save(output_filename)
 
     except Exception as e:
-        # Raise the exception to be caught in the main loop
         raise Exception(f"An error occurred during barcode generation for {s10_id}: {e}")
 
 
 def main():
     """Main function to parse arguments and run the generator."""
     parser = argparse.ArgumentParser(
-        description="Generate UPU S10 barcode images in a batch.",
+        description="Generate UPU S10 barcode images in a batch with enhanced styling.",
         epilog="Examples:\n"
                "  Standard: python upu_generator.py HF 60000000 CN 25 -d ./barcodes\n"
                "  Regional: python upu_generator.py KA 12345678 11 50 -d ./provincial_barcodes",
@@ -194,7 +212,6 @@ def main():
     cc = args.country_or_regional_code.upper()
     start_sn = int(args.start_serial_number)
     
-    # Create output directory if it doesn't exist
     output_dir = args.directory
     os.makedirs(output_dir, exist_ok=True)
     
@@ -203,11 +220,8 @@ def main():
     # --- Generation Loop ---
     for i in range(args.quantity):
         current_sn_int = start_sn + i
-        
-        # Format the serial number to be 8 digits, padded with leading zeros
         sn_str = str(current_sn_int).zfill(8)
         
-        # Stop if the serial number exceeds 8 digits
         if len(sn_str) > 8:
             print(f"\nWarning: Serial number has exceeded 8 digits ('99999999'). Stopping at {i} barcodes.", file=sys.stderr)
             break
@@ -216,18 +230,13 @@ def main():
             cs = calculate_s10_checksum(sn_str)
             full_s10_id = f"{si}{sn_str}{cs}{cc}"
             output_filename = os.path.join(output_dir, f"{full_s10_id}.png")
+            generate_upu_barcode(full_s10_id, output_filename, cc)
             
-            # Generate the barcode
-            generate_upu_barcode(full_s10_id, output_filename)
-            
-            # Print progress
             sys.stdout.write(f"\r✅ Generated {i+1}/{args.quantity}: {full_s10_id}")
             sys.stdout.flush()
 
         except Exception as e:
             print(f"\n❌ Error: {e}", file=sys.stderr)
-            # Decide whether to stop or continue on error
-            # For now, we will stop.
             sys.exit(1)
             
     print("\nBatch generation complete.")
